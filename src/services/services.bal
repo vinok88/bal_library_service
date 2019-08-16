@@ -1,5 +1,7 @@
 import ballerina/http;
 import ballerinax/java.jdbc;
+import ballerina/cache;
+
 listener http:Listener libEP = new(9090);
 
 jdbc:Client libryDB = new({
@@ -17,6 +19,8 @@ type Count record {
     int count;
 };
 
+cache:Cache cache = new(1000, 600000, 0.2);
+
 @http:ServiceConfig {
     basePath: "/lib"
 }
@@ -25,6 +29,19 @@ service libService on libEP {
         path: "/add/{book}"
     }
     resource function addBook(http:Caller caller, http:Request request, string book) {
+        lock {
+            var bookCache = cache.get(book);
+            if (bookCache is ()) {
+                cache.put(book, 1);
+            } else {
+                cache.put(book, <int>bookCache + 1);
+            }
+        }
+
+        var res = caller->respond("Book added successfully!");
+    }
+
+    function addBookDB(http:Caller caller, http:Request request, string book) {
         string addNewBook = "INSERT INTO library(name, count) values (?,1)";
     
         var addNewBookRes = libryDB->update(addNewBook, book);
@@ -40,6 +57,25 @@ service libService on libEP {
         path: "/borrow/{book}"
     }
     resource function borrowBook(http:Caller caller, http:Request request, string book) {
+        //lock {
+            var res = cache.get(book);
+            io:println(book);
+            io:println(res);
+            if (res is ()) {
+                var respondRes = caller->respond("book not available");
+            } else {
+                if (<int>res > 0) {
+                    cache.put(book, <int>res - 1);
+                    var respondRes = caller->respond("book available, Happy reading!");
+                } else {
+                    var respondRes = caller->respond("All copies borrowed, check back later..");
+                }
+            }
+        //}
+        
+    }
+
+    function borrowBookUpdateDB(http:Caller caller, http:Request request, string book) {
         string selectBook = "SELECT count FROM library where name =?";
         string updateCount = "UPDATE library SET count = ? WHERE name=?";
         var selectBookRes = libryDB->select(selectBook, Count, book);
@@ -66,13 +102,23 @@ service libService on libEP {
         } else {
             var res = caller->respond("Error fetching book info" + <@untiant><string>selectBookRes.detail()["message"]);
         }
-        
     }
 
     @http:ResourceConfig {
         path: "/return/{book}"
     }
     resource function returnBook(http:Caller caller, http:Request request, string book) {
+        var res = cache.get(book);
+        io:println(res);
+        if(res is ()) {
+            var respondRes = caller->respond("Invalid book return request");
+        } else {
+            cache.put(book, <int>res + 1);
+            var respondRes = caller->respond("book available, Happy reading!");
+        }
+    }
+
+    function returnBookDB(http:Caller caller, http:Request request, string book){
         string returnBook = "UPDATE library SET count = count + 1 WHERE name=?";
         var returnRes = libryDB->update(returnBook, book);
         if (returnRes is jdbc:UpdateResult) {
